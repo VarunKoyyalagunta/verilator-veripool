@@ -41,6 +41,7 @@
 #include "V3Graph.h"
 #include "V3Const.h"
 #include "V3Stats.h"
+#include "V3Hashed.h"
 
 typedef list<AstNodeVarRef*> GateVarRefList;
 
@@ -305,6 +306,7 @@ private:
     void consumedMarkRecurse(GateEitherVertex* vertexp);
     void consumedMove();
     void replaceAssigns();
+    void dedupe();
 
     // VISITORS
     virtual void visit(AstNetlist* nodep, AstNUser*) {
@@ -313,6 +315,8 @@ private:
 	if (debug()>6) m_graph.dumpDotFilePrefixed("gate_pre");
 	m_graph.removeRedundantEdgesSum(&V3GraphEdge::followAlwaysTrue);
 	m_graph.dumpDotFilePrefixed("gate_simp");
+	// Remove redundant logic
+	dedupe();
 	// Find gate interconnect and optimize
 	m_graph.userClearVertices();	// vertex->user(): bool.  True indicates we've set it as consumed
 	// Get rid of buffers first,
@@ -725,6 +729,8 @@ private:
 	    // However a VARREF should point to the original as it's otherwise confusing
 	    // to throw warnings that point to a PIN rather than where the pin us used.
 	    if (substp->castVarRef()) substp->fileline(nodep->fileline());
+	    // Make the substp an rvalue like nodep. This facilitate the hashing in dedupe.
+	    if(substp->castNodeVarRef()) ((AstNodeVarRef*)substp)->lvalue(false);
 	    nodep->replaceWith(substp);
 	    nodep->deleteTree(); nodep=NULL;
 	}
@@ -754,6 +760,114 @@ void GateVisitor::optimizeElimVar(AstVarScope* varscp, AstNode* substp, AstNode*
 	consumerp = V3Const::constifyEdit(consumerp);
 	if (debug()>=5) consumerp->dumpTree(cout,"\telimUseDne: ");
     }
+}
+
+//----------------------------------------------------------------------
+class GateOutputsVertex : public GateEitherVertex {
+public:
+    GateOutputsVertex(V3Graph* graphp)
+	: GateEitherVertex(graphp, NULL) {
+    }
+    virtual ~GateOutputsVertex() {}
+    virtual string name() const { return "*OUTPUTS*"; }
+    virtual string dotColor() const { return "green"; }
+    virtual string dotName() const { return ""; }
+};
+class GateDedupeGraphVisitor {
+    #define GATE_DEDUPE_GRAPH_ITERATE(me,next_type)	\
+            V3GraphEdge* edgep = (me)->inBeginp();	\
+	    while(edgep) { 				\
+		visit((next_type)edgep->fromp());	\
+		edgep = edgep->inNextp();		\
+	    }						
+private:
+    AstUser3InUse	m_inuser3;
+    V3Hashed		m_hashed;
+    //AstNode*		m_dupRhs;
+    GateVarVertex*	m_dupVvertexp;
+
+    
+    void visit(GateVarVertex *vvertexp) {
+	V3GraphEdge* edgep = vvertexp->inBeginp();
+	if(edgep) {
+	    GateLogicVertex* lvertexp = (GateLogicVertex*)edgep->fromp();
+	    AstNode* dupLhs = visit(lvertexp);
+	    UINFO(0, "visiting: " << vvertexp << endl);
+	    if(dupLhs) {
+		GateVarVertex* dupVvertexp = (GateVarVertex*) ((AstNodeVarRef*)dupLhs)->varScopep()->user1p();
+		UINFO(0,"replacing " << vvertexp->varScp() << " with " << dupVvertexp->varScp() << endl);
+		for(V3GraphEdge* outedgep = vvertexp->outBeginp();outedgep;) {
+		    GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top());
+		    AstNode* consumerp = consumeVertexp->nodep();
+		    GateElimVisitor elimVisitor(consumerp,vvertexp->varScp(),dupLhs);
+		    UINFO(0, "\treplaced?: " << elimVisitor.didReplace() << endl);
+		    outedgep = outedgep->relinkFromp(dupVvertexp);
+		}
+		while (V3GraphEdge* inedgep = vvertexp->inBeginp()) {
+		    inedgep->unlinkDelete(); inedgep=NULL;
+		}
+		AstNode* lvertexnodep = lvertexp->nodep();
+		lvertexnodep->unlinkFrBack();
+		vvertexp->varScp()->valuep(lvertexnodep);
+		lvertexnodep = NULL;
+		vvertexp->user(true);
+		lvertexp->user(true);
+	    }
+	}
+    }
+    AstNode* visit(GateLogicVertex *lvertexp) {
+	GATE_DEDUPE_GRAPH_ITERATE(lvertexp,GateVarVertex*);
+
+	UINFO(0, "visiting: " << lvertexp << endl);
+	AstNode* nodep = lvertexp->nodep();
+	AstNode* rhsp = NULL;
+	AstNode* lhsp = NULL;
+
+	if(AstAlways* alwaysp = dynamic_cast<AstAlways*>(nodep)) {
+	    nodep = alwaysp->bodysp();
+	}
+	if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(nodep)) {
+	    rhsp = assignp->rhsp();
+	    lhsp = assignp->lhsp();
+	}
+
+	rhsp->user3p(lhsp);
+	m_hashed.hashAndInsert(rhsp);
+	//UINFO(0, "\trhsp " << ((AstAdd*) rhsp)->lhsp() << " ADD " << ((AstAdd*) rhsp)->rhsp() << endl);
+	AstNode* dup = NULL;
+	V3Hashed::iterator dupit = m_hashed.findDuplicate(rhsp);
+	if(dupit != m_hashed.end()) {
+	    UINFO(0, "dupe: " << m_hashed.iteratorNodep(dupit) << endl);
+	    dup = (AstNode*) m_hashed.iteratorNodep(dupit)->user3p();//(AstNode*) m_hashed.iteratorNodep(dupit);
+	    V3Hashed::iterator inserted = dupit;
+	    ++inserted;
+	    UASSERT(m_hashed.iteratorNodep(inserted)==rhsp,"");
+	    m_hashed.erase(inserted);
+	}
+	return dup;
+    }
+    void visit(GateOutputsVertex *overtexp) {
+	GATE_DEDUPE_GRAPH_ITERATE(overtexp,GateVarVertex*);
+	UINFO(0, "visiting: " << overtexp << endl);
+    }
+public:
+    GateDedupeGraphVisitor(GateOutputsVertex* bottom) {
+	visit(bottom);
+    }
+    #undef GATE_DEDUPE_GRAPH_ITERATE
+};
+void GateVisitor::dedupe() {
+    // want the graph to be fully connected so recursing over it is easier
+    // dumb stopgap way of doing that for now
+    GateOutputsVertex *bottom = new GateOutputsVertex(&m_graph);
+    for (V3GraphVertex* itp = m_graph.verticesBeginp(); itp; itp=itp->verticesNextp()) {
+	if(GateVarVertex* vvertexp = dynamic_cast<GateVarVertex*>(itp)) {
+	    if(vvertexp->isTop() && vvertexp->varScp()->varp()->isOutOnly()) {
+		new V3GraphEdge(&m_graph, vvertexp, bottom, 1);
+	    }
+	}
+    }
+    GateDedupeGraphVisitor ggdv = GateDedupeGraphVisitor(bottom);
 }
 
 //######################################################################
