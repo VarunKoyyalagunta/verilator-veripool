@@ -889,6 +889,8 @@ private:
 	if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(nodep)) {
 	    rhsp = assignp->rhsp();
 	    lhsp = assignp->lhsp();
+	} else {
+	    return NULL;
 	}
 	rhsp->user3p(lhsp);
 	AstNode* dup =  hashAndFindDupe(rhsp,activep);
