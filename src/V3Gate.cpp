@@ -793,15 +793,20 @@ private:
 	    GateLogicVertex* lvertexp = (GateLogicVertex*)edgep->fromp();
 	    AstNode* dupLhs = visit(lvertexp);
 	    UINFO(0, "visiting: " << vvertexp << endl);
+	    //is there a lhs varref that has the same input logic as this varvertex?
 	    if(dupLhs) {
+		//replace all of this varvertex's consumers with dupLhs
 		GateVarVertex* dupVvertexp = (GateVarVertex*) ((AstNodeVarRef*)dupLhs)->varScopep()->user1p();
 		UINFO(0,"replacing " << vvertexp->varScp() << " with " << dupVvertexp->varScp() << endl);
 		for(V3GraphEdge* outedgep = vvertexp->outBeginp();outedgep;) {
-		    GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top());
-		    AstNode* consumerp = consumeVertexp->nodep();
-		    GateElimVisitor elimVisitor(consumerp,vvertexp->varScp(),dupLhs);
-		    UINFO(0, "\treplaced?: " << elimVisitor.didReplace() << endl);
-		    outedgep = outedgep->relinkFromp(dupVvertexp);
+		    if(GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top())) {
+			AstNode* consumerp = consumeVertexp->nodep();
+			GateElimVisitor elimVisitor(consumerp,vvertexp->varScp(),dupLhs);
+			UINFO(0, "\treplaced?: " << elimVisitor.didReplace() << endl);
+			outedgep = outedgep->relinkFromp(dupVvertexp);
+		    } else {
+			outedgep = outedgep->outNextp();
+		    }
 		}
 		while (V3GraphEdge* inedgep = vvertexp->inBeginp()) {
 		    inedgep->unlinkDelete(); inedgep=NULL;
@@ -815,6 +820,8 @@ private:
 	    }
 	}
     }
+
+    //returns a varref that has the same input logic
     AstNode* visit(GateLogicVertex *lvertexp) {
 	GATE_DEDUPE_GRAPH_ITERATE(lvertexp,GateVarVertex*);
 
