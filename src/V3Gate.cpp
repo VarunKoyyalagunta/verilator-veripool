@@ -447,6 +447,7 @@ private:
 public:
     // CONSTUCTORS
     GateVisitor(AstNode* nodep) {
+	AstNode::user1ClearTree();
 	m_logicVertexp = NULL;
 	m_scopep = NULL;
 	m_modp = NULL;
@@ -789,25 +790,28 @@ private:
 
     
     void visit(GateVarVertex *vvertexp) {
-	if(vvertexp->varScp()->user3())
+	if(	vvertexp->varScp()->user3() //Check that we haven't been here before
+	   ||	(!vvertexp->inSize1())        //I dont think this can happen, but just in case
+		)
 	    return;
 	vvertexp->varScp()->user3(true);
-	V3GraphEdge* edgep = vvertexp->inBeginp();
-	if(edgep) {
+	if(V3GraphEdge* edgep = vvertexp->inBeginp()) {
 	    GateLogicVertex* lvertexp = (GateLogicVertex*)edgep->fromp();
-	    AstNode* dupLhs = visit(lvertexp);
-	    UINFO(0, "visiting: " << vvertexp << endl);
-	    //was there a lhs varref that has the same input logic as this varvertex?
-	    if(dupLhs) {
-		//replace all of this varvertex's consumers with dupLhs
-		GateVarVertex* dupVvertexp = (GateVarVertex*) ((AstNodeVarRef*)dupLhs)->varScopep()->user1p();
+	    AstNodeVarRef* dupLhs = visit(lvertexp);
+	    //FIXME expand conditions to include public signals, etc
+	    if(vvertexp->isTop())  return;       //don't want to remove an output. 
+	    //UINFO(0, "visiting: " << vvertexp << endl);
+	    if(dupLhs) {  //was there a lhs varref that has the same input logic as this varvertex?
+		AstVarScope* dupVarScopep = dupLhs->varScopep();
+		GateVarVertex* dupVvertexp = (GateVarVertex*) (dupVarScopep->user1p());
 		UINFO(0,"replacing " << vvertexp->varScp() << " with " << dupVvertexp->varScp() << endl);
+		//replace all of this varvertex's consumers with dupLhs
 		for(V3GraphEdge* outedgep = vvertexp->outBeginp();outedgep;) {
 		    //for dumb GateOutputsVertex
 		    if(GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top())) {
 			AstNode* consumerp = consumeVertexp->nodep();
 			GateElimVisitor elimVisitor(consumerp,vvertexp->varScp(),dupLhs);
-			UINFO(0, "\treplaced?: " << elimVisitor.didReplace() << endl);
+			//UINFO(0, "\treplaced?: " << elimVisitor.didReplace() << endl);
 		    } 
 		    outedgep = outedgep->relinkFromp(dupVvertexp);
 		}
@@ -826,8 +830,8 @@ private:
 
     AstNode* hashAndFindDupe(AstNode* nodep, AstActive* activep) {
 	if(activep) {
-	    UINFO(0, "activep: " << activep << endl);
-	    UINFO(0, "\tsentree: " << activep->sensesp() << endl);
+	    //UINFO(0, "activep: " << activep << endl);
+	    //UINFO(0, "\tsentree: " << activep->sensesp() << endl);
 	}
 	nodep->user5p(activep);
 	m_hashed.hashAndInsert(nodep);
@@ -846,25 +850,14 @@ private:
 	    }
 	    dupit++;
 	}
-	/*
-	if(dupit != m_hashed.end()) {
-	    UINFO(0, "dupe: " << m_hashed.iteratorNodep(dupit) << endl);
-	    dup = m_hashed.iteratorNodep(dupit);
-	    //delete the just inserted node, as it's a duplicate
-	    V3Hashed::iterator inserted = dupit;
-	    ++inserted;
-	    UASSERT(m_hashed.iteratorNodep(inserted)==nodep,"");
-	    m_hashed.erase(inserted);
-	}
-	*/
 	return dup;
     }
 
     //returns a varref that has the same input logic
-    AstNode* visit(GateLogicVertex *lvertexp) {
+    AstNodeVarRef* visit(GateLogicVertex *lvertexp) {
 	GATE_DEDUPE_GRAPH_ITERATE(lvertexp,GateVarVertex*);
 
-	UINFO(0, "visiting: " << lvertexp << endl);
+	//UINFO(0, "visiting: " << lvertexp << endl);
 	AstNode* nodep = lvertexp->nodep();
 	AstActive* activep = lvertexp->activep();
 	AstNode* rhsp = NULL;
@@ -874,11 +867,11 @@ private:
 	    activep->user3(true);
 	    AstNodeSenItem* senses = activep->sensesp()->sensesp();
 	    for (AstNodeSenItem* senp = senses; senp; senp=senp->nextp()->castNodeSenItem()) {
+		//FIXME, could it also be a AstSenGate?
 		AstSenItem* senitemp = senp->castSenItem();
 		if(AstNodeVarRef* varrefp = senitemp->varrefp()) {
 		    if(GateVarVertex * vvertexp = (GateVarVertex*) varrefp->varScopep()->user1p()) {
 			visit(vvertexp);
-			//new V3GraphEdge(&m_graph, (V3GraphVertex*) varrefp->varScopep()->user1(), m_logicVertexp, 1);
 		    }
 		}
 	    }
@@ -892,13 +885,17 @@ private:
 	} else {
 	    return NULL;
 	}
+	//TODO, handle more complex lhs expressions
+	if(!dynamic_cast<AstNodeVarRef*>(lhsp)) {
+	    return NULL;
+	}
 	rhsp->user3p(lhsp);
 	AstNode* dup =  hashAndFindDupe(rhsp,activep);
-	return dup ? (AstNode*) dup->user3p() : NULL;
+	return dup ? (AstNodeVarRef*) dup->user3p() : NULL;
     }
     void visit(GateOutputsVertex *overtexp) {
 	GATE_DEDUPE_GRAPH_ITERATE(overtexp,GateVarVertex*);
-	UINFO(0, "visiting: " << overtexp << endl);
+	//UINFO(0, "visiting: " << overtexp << endl);
     }
 public:
     GateDedupeGraphVisitor(GateOutputsVertex* bottom) {
