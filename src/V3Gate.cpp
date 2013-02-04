@@ -797,21 +797,22 @@ private:
 	vvertexp->varScp()->user3(true);
 	if(V3GraphEdge* edgep = vvertexp->inBeginp()) {
 	    GateLogicVertex* lvertexp = (GateLogicVertex*)edgep->fromp();
-	    AstNodeVarRef* dupLhs = visit(lvertexp);
+	    AstNodeVarRef* dupLhs = visit(lvertexp, vvertexp->varScp());
+	    UINFO(0, "visiting: " << vvertexp << endl);
 	    //FIXME expand conditions to include public signals, etc
 	    if(vvertexp->isTop())  return;       //don't want to remove an output. 
-	    //UINFO(0, "visiting: " << vvertexp << endl);
 	    if(dupLhs) {  //was there a lhs varref that has the same input logic as this varvertex?
 		AstVarScope* dupVarScopep = dupLhs->varScopep();
 		GateVarVertex* dupVvertexp = (GateVarVertex*) (dupVarScopep->user1p());
 		UINFO(0,"replacing " << vvertexp->varScp() << " with " << dupVvertexp->varScp() << endl);
+
 		//replace all of this varvertex's consumers with dupLhs
 		for(V3GraphEdge* outedgep = vvertexp->outBeginp();outedgep;) {
 		    //for dumb GateOutputsVertex
 		    if(GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top())) {
 			AstNode* consumerp = consumeVertexp->nodep();
+			//UINFO(0," replacing logic feeding " << consumeVertexp << " " << consumerp << endl);
 			GateElimVisitor elimVisitor(consumerp,vvertexp->varScp(),dupLhs);
-			//UINFO(0, "\treplaced?: " << elimVisitor.didReplace() << endl);
 		    } 
 		    outedgep = outedgep->relinkFromp(dupVvertexp);
 		}
@@ -840,6 +841,7 @@ private:
 	V3Hashed::iterator dupit = m_hashed.findDuplicate(nodep);
 	while(dupit != m_hashed.end()) {
 	    AstNode* possibleDup = m_hashed.iteratorNodep(dupit);
+	    UINFO(0,"possible dupe " << possibleDup << endl);
 	    //we're at the just inserted node
 	    if(possibleDup == nodep) {
 		if(dup) m_hashed.erase(dupit);
@@ -854,14 +856,13 @@ private:
     }
 
     //returns a varref that has the same input logic
-    AstNodeVarRef* visit(GateLogicVertex *lvertexp) {
+    AstNodeVarRef* visit(GateLogicVertex *lvertexp, AstVarScope *consumerp) {
 	GATE_DEDUPE_GRAPH_ITERATE(lvertexp,GateVarVertex*);
 
-	//UINFO(0, "visiting: " << lvertexp << endl);
 	AstNode* nodep = lvertexp->nodep();
 	AstActive* activep = lvertexp->activep();
-	AstNode* rhsp = NULL;
-	AstNode* lhsp = NULL;
+
+	UINFO(0, "visiting: " << lvertexp << " : " << nodep << endl);
 
 	if(activep && !activep->user3()) {		
 	    activep->user3(true);
@@ -876,22 +877,47 @@ private:
 		}
 	    }
 	}
-	if(AstAlways* alwaysp = dynamic_cast<AstAlways*>(nodep)) {
-	    nodep = alwaysp->bodysp();
-	}
 	if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(nodep)) {
-	    rhsp = assignp->rhsp();
-	    lhsp = assignp->lhsp();
-	} else {
-	    return NULL;
+	    return visit(assignp, activep, consumerp);
+	} else if(AstAlways* alwaysp = dynamic_cast<AstAlways*>(nodep)) {
+	    return visit(alwaysp, activep, consumerp);
 	}
+	return NULL;
+    }
+    AstNodeVarRef* visit(AstNodeAssign* assignp, AstActive* activep, AstVarScope* consumerp) {
+	AstNode* rhsp = assignp->rhsp();
+	AstNode* lhsp = assignp->lhsp();
 	//TODO, handle more complex lhs expressions
-	if(!dynamic_cast<AstNodeVarRef*>(lhsp)) {
+	if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(lhsp)) {
+	    UASSERT(lhsVarRefp->varScopep() == consumerp, "consumer doesn't match lhs of assign");
+	} else{
+	    UINFO(0, "lhs not an varref!" << endl);
 	    return NULL;
 	}
 	rhsp->user3p(lhsp);
+	UINFO(0,"looking for dupes of " << lhsp << endl);
 	AstNode* dup =  hashAndFindDupe(rhsp,activep);
 	return dup ? (AstNodeVarRef*) dup->user3p() : NULL;
+    }
+    AstNodeVarRef* visit(AstAlways* alwaysp, AstActive* activep, AstVarScope* consumerp) {
+	AstNode* bodysp = alwaysp->bodysp();
+	while(bodysp) {
+	    if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(bodysp)) {
+		if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(assignp->lhsp())) {
+		    if(lhsVarRefp->varScopep() == consumerp) {
+			return visit(assignp, activep, consumerp);
+		    }
+		}
+	    } else if(AstNodeIf* ifp = dynamic_cast<AstNodeIf*>(bodysp)) {
+		return visit(ifp, activep);
+	    }
+	    bodysp = bodysp->nextp();
+	}
+	return NULL;
+    }
+    //FIXME
+    AstNodeVarRef* visit(AstNodeIf* ifp, AstActive* activep) {
+	return NULL;
     }
     void visit(GateOutputsVertex *overtexp) {
 	GATE_DEDUPE_GRAPH_ITERATE(overtexp,GateVarVertex*);
