@@ -790,11 +790,11 @@ private:
 
     
     void visit(GateVarVertex *vvertexp) {
-	if(	vvertexp->varScp()->user3() //Check that we haven't been here before
+	if(	vvertexp->varScp()->user2() //Check that we haven't been here before
 	   ||	(!vvertexp->inSize1())        //I dont think this can happen, but just in case
 		)
 	    return;
-	vvertexp->varScp()->user3(true);
+	vvertexp->varScp()->user2(true);
 	if(V3GraphEdge* edgep = vvertexp->inBeginp()) {
 	    GateLogicVertex* lvertexp = (GateLogicVertex*)edgep->fromp();
 	    AstNodeVarRef* dupLhs = visit(lvertexp, vvertexp->varScp());
@@ -829,12 +829,13 @@ private:
 	}
     }
 
-    AstNode* hashAndFindDupe(AstNode* nodep, AstActive* activep) {
-	if(activep) {
+    AstNode* hashAndFindDupe(AstNode* nodep, AstNode* extra1p, AstNode* extra2p) {
+	if(extra1p) {
 	    //UINFO(0, "activep: " << activep << endl);
 	    //UINFO(0, "\tsentree: " << activep->sensesp() << endl);
 	}
-	nodep->user5p(activep);
+	nodep->user3p(extra1p);
+	nodep->user5p(extra2p);
 	m_hashed.hashAndInsert(nodep);
 	//UINFO(0, "\trhsp " << ((AstAdd*) nodep)->lhsp() << " ADD " << ((AstAdd*) nodep)->nodep() << endl);
 	AstNode* dup = NULL;
@@ -842,11 +843,12 @@ private:
 	while(dupit != m_hashed.end()) {
 	    AstNode* possibleDup = m_hashed.iteratorNodep(dupit);
 	    UINFO(0,"possible dupe " << possibleDup << endl);
+	    if(possibleDup->user5p())  UINFO(0," user5p:" << (AstNode*)possibleDup->user5p() << endl);
 	    //we're at the just inserted node
 	    if(possibleDup == nodep) {
 		if(dup) m_hashed.erase(dupit);
 		break;
-	    } else if(!dup && ((AstActive*)possibleDup->user5p()) == activep) {
+	    } else if(!dup && ((AstNode*)possibleDup->user3p()) == extra1p && ((AstNode*)possibleDup->user5p()) == extra2p) {
 		dup = possibleDup;
 		//break;
 	    }
@@ -864,8 +866,8 @@ private:
 
 	UINFO(0, "visiting: " << lvertexp << " : " << nodep << endl);
 
-	if(activep && !activep->user3()) {		
-	    activep->user3(true);
+	if(activep && !activep->user2()) {		
+	    activep->user2(true);
 	    AstNodeSenItem* senses = activep->sensesp()->sensesp();
 	    for (AstNodeSenItem* senp = senses; senp; senp=senp->nextp()->castNodeSenItem()) {
 		//FIXME, could it also be a AstSenGate?
@@ -878,13 +880,13 @@ private:
 	    }
 	}
 	if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(nodep)) {
-	    return visit(assignp, activep, consumerp);
+	    return visit(assignp, consumerp, activep);
 	} else if(AstAlways* alwaysp = dynamic_cast<AstAlways*>(nodep)) {
-	    return visit(alwaysp, activep, consumerp);
+	    return visit(alwaysp, consumerp, activep);
 	}
 	return NULL;
     }
-    AstNodeVarRef* visit(AstNodeAssign* assignp, AstActive* activep, AstVarScope* consumerp) {
+    AstNodeVarRef* visit(AstNodeAssign* assignp, AstVarScope* consumerp, AstNode* extra1p=NULL, AstNode* extra2p=NULL) {
 	AstNode* rhsp = assignp->rhsp();
 	AstNode* lhsp = assignp->lhsp();
 	//TODO, handle more complex lhs expressions
@@ -894,29 +896,46 @@ private:
 	    UINFO(0, "lhs not an varref!" << endl);
 	    return NULL;
 	}
-	rhsp->user3p(lhsp);
+	rhsp->user2p(lhsp);
 	UINFO(0,"looking for dupes of " << lhsp << endl);
-	AstNode* dup =  hashAndFindDupe(rhsp,activep);
-	return dup ? (AstNodeVarRef*) dup->user3p() : NULL;
+	UINFO(0," rhs: " << rhsp << endl);
+	AstNode* dup =  hashAndFindDupe(rhsp,extra1p,extra2p);
+	return dup ? (AstNodeVarRef*) dup->user2p() : NULL;
     }
-    AstNodeVarRef* visit(AstAlways* alwaysp, AstActive* activep, AstVarScope* consumerp) {
+    AstNodeVarRef* visit(AstAlways* alwaysp, AstVarScope* consumerp, AstActive* activep) {
 	AstNode* bodysp = alwaysp->bodysp();
 	while(bodysp) {
+	    UINFO(0, "always stmt: " << bodysp << endl);
 	    if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(bodysp)) {
 		if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(assignp->lhsp())) {
 		    if(lhsVarRefp->varScopep() == consumerp) {
-			return visit(assignp, activep, consumerp);
+			return visit(assignp, consumerp, activep);
 		    }
 		}
 	    } else if(AstNodeIf* ifp = dynamic_cast<AstNodeIf*>(bodysp)) {
-		return visit(ifp, activep);
+		return visit(ifp, consumerp, activep);
 	    }
 	    bodysp = bodysp->nextp();
 	}
 	return NULL;
     }
-    //FIXME
-    AstNodeVarRef* visit(AstNodeIf* ifp, AstActive* activep) {
+    //ugly support for latches
+    AstNodeVarRef* visit(AstNodeIf* ifp, AstVarScope* consumerp, AstActive* activep) {
+	if(ifp->elsesp()) return NULL;
+	AstNode* ifsp = ifp->ifsp();
+	while(ifsp) {
+	    if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(ifsp)) {
+		if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(assignp->lhsp())) {
+		    if(lhsVarRefp->varScopep() == consumerp) {
+			if(AstNodeVarRef* ifcondp = dynamic_cast<AstNodeVarRef*>(ifp->condp())) {
+			    UINFO(0, "IF condition: " << ifcondp << endl);
+			    return visit(assignp, consumerp, activep, ifcondp->varScopep());
+			}
+		    }
+		}
+	    }
+	    ifsp = ifsp->nextp();
+	}
 	return NULL;
     }
     void visit(GateOutputsVertex *overtexp) {
@@ -925,7 +944,7 @@ private:
     }
 public:
     GateDedupeGraphVisitor(GateOutputsVertex* bottom) {
-	AstNode::user3ClearTree();
+	AstNode::user2ClearTree();
 	visit(bottom);
     }
     #undef GATE_DEDUPE_GRAPH_ITERATE
