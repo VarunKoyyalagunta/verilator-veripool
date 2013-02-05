@@ -790,11 +790,20 @@ private:
 
     
     void visit(GateVarVertex *vvertexp) {
-	if(	vvertexp->varScp()->user2() //Check that we haven't been here before
-	   ||	(!vvertexp->inSize1())        //I dont think this can happen, but just in case
-		)
-	    return;
+	//Check that we haven't been here before
+	if(vvertexp->varScp()->user2()) return;
 	vvertexp->varScp()->user2(true);
+
+	if(!vvertexp->inSize1())  {     //too complicated, walk inputs and return
+	    AstVarScope* varScp = vvertexp->varScp();
+	    V3GraphEdge* edgep = (vvertexp)->inBeginp();
+	    while(edgep) 	{
+		visit((GateLogicVertex*) edgep->fromp(), varScp);
+		edgep = edgep->inNextp();
+	    }
+	    return;
+	}
+
 	if(V3GraphEdge* edgep = vvertexp->inBeginp()) {
 	    GateLogicVertex* lvertexp = (GateLogicVertex*)edgep->fromp();
 	    AstNodeVarRef* dupLhs = visit(lvertexp, vvertexp->varScp());
