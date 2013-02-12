@@ -34,6 +34,7 @@
 #include <iomanip>
 #include <vector>
 #include <list>
+#include <typeinfo>
 
 #include "V3Global.h"
 #include "V3Gate.h"
@@ -807,7 +808,7 @@ private:
 	if(V3GraphEdge* edgep = vvertexp->inBeginp()) {
 	    GateLogicVertex* lvertexp = (GateLogicVertex*)edgep->fromp();
 	    AstNodeVarRef* dupLhs = visit(lvertexp, vvertexp->varScp());
-	    UINFO(0, "visiting: " << vvertexp << endl);
+	    //UINFO(0, "visiting: " << vvertexp << endl);
 	    //FIXME expand conditions to include public signals, etc
 	    if(vvertexp->isTop())  return;       //don't want to remove an output. 
 	    if(dupLhs) {  //was there a lhs varref that has the same input logic as this varvertex?
@@ -838,32 +839,37 @@ private:
 	}
     }
 
-    AstNode* hashAndFindDupe(AstNode* nodep, AstNode* extra1p, AstNode* extra2p) {
+    AstNodeAssign* hashAndFindDupe(AstNodeAssign* assignp, AstNode* extra1p, AstNode* extra2p) {
 	if(extra1p) {
 	    //UINFO(0, "activep: " << activep << endl);
 	    //UINFO(0, "\tsentree: " << activep->sensesp() << endl);
 	}
-	nodep->user3p(extra1p);
-	nodep->user5p(extra2p);
-	m_hashed.hashAndInsert(nodep);
-	//UINFO(0, "\trhsp " << ((AstAdd*) nodep)->lhsp() << " ADD " << ((AstAdd*) nodep)->nodep() << endl);
+	AstNode *rhsp = assignp->rhsp();
+	const type_info& assign_type = typeid(*assignp);
+	rhsp->user2p(assignp);
+	rhsp->user3p(extra1p);
+	rhsp->user5p(extra2p);
+	m_hashed.hashAndInsert(rhsp);
+	//UINFO(0, "\trhsp " << ((AstAdd*) rhsp)->lhsp() << " ADD " << ((AstAdd*) nodep)->nodep() << endl);
 	AstNode* dup = NULL;
-	V3Hashed::iterator dupit = m_hashed.findDuplicate(nodep);
+	V3Hashed::iterator dupit = m_hashed.findDuplicate(rhsp);
 	while(dupit != m_hashed.end()) {
 	    AstNode* possibleDup = m_hashed.iteratorNodep(dupit);
-	    UINFO(0,"possible dupe " << possibleDup << endl);
-	    if(possibleDup->user5p())  UINFO(0," user5p:" << (AstNode*)possibleDup->user5p() << endl);
+	    //UINFO(0,"possible dupe " << possibleDup << endl);
+	    //if(possibleDup->user5p())  UINFO(0," user5p:" << (AstNode*)possibleDup->user5p() << endl);
 	    //we're at the just inserted node
-	    if(possibleDup == nodep) {
+	    if(possibleDup == rhsp) {
 		if(dup) m_hashed.erase(dupit);
 		break;
-	    } else if(!dup && ((AstNode*)possibleDup->user3p()) == extra1p && ((AstNode*)possibleDup->user5p()) == extra2p) {
+	    } else if(!dup 
+		    && ((AstNode*)possibleDup->user3p()) == extra1p 
+		    && ((AstNode*)possibleDup->user5p()) == extra2p 
+		    && typeid(*((AstNodeAssign*)possibleDup->user2p())) == assign_type ) {
 		dup = possibleDup;
-		//break;
 	    }
 	    dupit++;
 	}
-	return dup;
+	return dup ? (AstNodeAssign*) dup->user2p() : NULL;
     }
 
     //returns a varref that has the same input logic
@@ -873,7 +879,7 @@ private:
 	AstNode* nodep = lvertexp->nodep();
 	AstActive* activep = lvertexp->activep();
 
-	UINFO(0, "visiting: " << lvertexp << " : " << nodep << endl);
+	//UINFO(0, "visiting: " << lvertexp << " : " << nodep << endl);
 
 	if(activep && !activep->user2()) {		
 	    activep->user2(true);
@@ -896,25 +902,23 @@ private:
 	return NULL;
     }
     AstNodeVarRef* visit(AstNodeAssign* assignp, AstVarScope* consumerp, AstNode* extra1p=NULL, AstNode* extra2p=NULL) {
-	AstNode* rhsp = assignp->rhsp();
 	AstNode* lhsp = assignp->lhsp();
 	//TODO, handle more complex lhs expressions
 	if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(lhsp)) {
 	    UASSERT(lhsVarRefp->varScopep() == consumerp, "consumer doesn't match lhs of assign");
 	} else{
-	    UINFO(0, "lhs not an varref!" << endl);
+	    //UINFO(0, "lhs not an varref!" << endl);
 	    return NULL;
 	}
-	rhsp->user2p(lhsp);
-	UINFO(0,"looking for dupes of " << lhsp << endl);
-	UINFO(0," rhs: " << rhsp << endl);
-	AstNode* dup =  hashAndFindDupe(rhsp,extra1p,extra2p);
-	return dup ? (AstNodeVarRef*) dup->user2p() : NULL;
+	//UINFO(0,"looking for dupes of " << lhsp << endl);
+	//UINFO(0," rhs: " << rhsp << endl);
+	AstNodeAssign* dup =  hashAndFindDupe(assignp,extra1p,extra2p);
+	return dup ? (AstNodeVarRef*) dup->lhsp() : NULL;
     }
     AstNodeVarRef* visit(AstAlways* alwaysp, AstVarScope* consumerp, AstActive* activep) {
 	AstNode* bodysp = alwaysp->bodysp();
 	while(bodysp) {
-	    UINFO(0, "always stmt: " << bodysp << endl);
+	    //UINFO(0, "always stmt: " << bodysp << endl);
 	    if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(bodysp)) {
 		if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(assignp->lhsp())) {
 		    if(lhsVarRefp->varScopep() == consumerp) {
@@ -937,7 +941,7 @@ private:
 		if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(assignp->lhsp())) {
 		    if(lhsVarRefp->varScopep() == consumerp) {
 			if(AstNodeVarRef* ifcondp = dynamic_cast<AstNodeVarRef*>(ifp->condp())) {
-			    UINFO(0, "IF condition: " << ifcondp << endl);
+			    //UINFO(0, "IF condition: " << ifcondp << endl);
 			    return visit(assignp, consumerp, activep, ifcondp->varScopep());
 			}
 		    }
