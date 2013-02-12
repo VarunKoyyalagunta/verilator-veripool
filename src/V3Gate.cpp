@@ -136,6 +136,7 @@ private:
     // STATE
     bool		m_buffersOnly;	// Set when we only allow simple buffering, no equations (for clocks)
     AstNodeVarRef*	m_lhsVarRef;	// VarRef on lhs of assignment (what we're replacing)
+    bool		m_dedupe;	// Set when we use isGateDedupable instead of isGateOptimizable
 
     // METHODS
     void clearSimple(const char* because) {
@@ -195,7 +196,7 @@ private:
     virtual void visit(AstNode* nodep, AstNUser*) {
 	// *** Special iterator
 	if (!m_isSimple) return;	// Fastpath
-	if (!nodep->isGateOptimizable()
+	if ( !(m_dedupe?nodep->isGateDedupable():nodep->isGateOptimizable())
 	    || !nodep->isPure()
 	    || nodep->isBrancher()) {
 	    UINFO(5, "Non optimizable type: "<<nodep<<endl);
@@ -205,11 +206,12 @@ private:
     }
 public:
     // CONSTUCTORS
-    GateOkVisitor(AstNode* nodep, bool buffersOnly) {
+    GateOkVisitor(AstNode* nodep, bool buffersOnly, bool dedupe) {
 	m_isSimple = true;
 	m_substTreep = NULL;
 	m_buffersOnly = buffersOnly;
 	m_lhsVarRef = NULL;
+	m_dedupe = dedupe;
 	// Iterate
 	nodep->accept(*this);
 	// Check results
@@ -499,7 +501,7 @@ void GateVisitor::optimizeSignals(bool allowMultiIn) {
 		AstNode* logicp = logicVertexp->nodep();
 		if (logicVertexp->reducible()) {
 		    // Can we eliminate?
-		    GateOkVisitor okVisitor(logicp, vvertexp->isClock());
+		    GateOkVisitor okVisitor(logicp, vvertexp->isClock(),false);
 		    bool multiInputs = okVisitor.rhsVarRefs().size() > 1;
 		    // Was it ok?
 		    bool doit = okVisitor.isSimple();
@@ -812,29 +814,35 @@ private:
 	    //FIXME expand conditions to include public signals, etc
 	    if(vvertexp->isTop())  return;       //don't want to remove an output. 
 	    if(dupLhs) {  //was there a lhs varref that has the same input logic as this varvertex?
-		AstVarScope* dupVarScopep = dupLhs->varScopep();
-		GateVarVertex* dupVvertexp = (GateVarVertex*) (dupVarScopep->user1p());
-		UINFO(0,"replacing " << vvertexp->varScp() << " with " << dupVvertexp->varScp() << endl);
+		//UINFO(0,"gateokvisitor " << lvertexp->nodep() << endl);
+		GateOkVisitor okVisitor(lvertexp->nodep(), false, true);
+		//UINFO(0,"isSimple? " << okVisitor.isSimple() << endl);
+		if(!okVisitor.isSimple()) UINFO(0, "NOT REPLACING " << vvertexp->varScp() << " because not simple" << endl);
+		if(okVisitor.isSimple()) {
+		    AstVarScope* dupVarScopep = dupLhs->varScopep();
+		    GateVarVertex* dupVvertexp = (GateVarVertex*) (dupVarScopep->user1p());
+		    UINFO(0,"replacing " << vvertexp->varScp() << " with " << dupVvertexp->varScp() << endl);
 
-		//replace all of this varvertex's consumers with dupLhs
-		for(V3GraphEdge* outedgep = vvertexp->outBeginp();outedgep;) {
-		    //for dumb GateOutputsVertex
-		    if(GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top())) {
-			AstNode* consumerp = consumeVertexp->nodep();
-			//UINFO(0," replacing logic feeding " << consumeVertexp << " " << consumerp << endl);
-			GateElimVisitor elimVisitor(consumerp,vvertexp->varScp(),dupLhs);
-		    } 
-		    outedgep = outedgep->relinkFromp(dupVvertexp);
+		    //replace all of this varvertex's consumers with dupLhs
+		    for(V3GraphEdge* outedgep = vvertexp->outBeginp();outedgep;) {
+			//for dumb GateOutputsVertex
+			if(GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top())) {
+			    AstNode* consumerp = consumeVertexp->nodep();
+			    //UINFO(0," replacing logic feeding " << consumeVertexp << " " << consumerp << endl);
+			    GateElimVisitor elimVisitor(consumerp,vvertexp->varScp(),dupLhs);
+			} 
+			outedgep = outedgep->relinkFromp(dupVvertexp);
+		    }
+		    while (V3GraphEdge* inedgep = vvertexp->inBeginp()) {
+			inedgep->unlinkDelete(); inedgep=NULL;
+		    }
+		    AstNode* lvertexnodep = lvertexp->nodep();
+		    lvertexnodep->unlinkFrBack();
+		    vvertexp->varScp()->valuep(lvertexnodep);
+		    lvertexnodep = NULL;
+		    //vvertexp->user(true);
+		    //lvertexp->user(true);
 		}
-		while (V3GraphEdge* inedgep = vvertexp->inBeginp()) {
-		    inedgep->unlinkDelete(); inedgep=NULL;
-		}
-		AstNode* lvertexnodep = lvertexp->nodep();
-		lvertexnodep->unlinkFrBack();
-		vvertexp->varScp()->valuep(lvertexnodep);
-		lvertexnodep = NULL;
-		//vvertexp->user(true);
-		//lvertexp->user(true);
 	    }
 	}
     }
@@ -894,6 +902,10 @@ private:
 		}
 	    }
 	}
+	//TODO: Testing activep in the duplicate matching doesn't work
+	//optimally for statements under generated clocks. Statements under
+	//different generated clocks will never compare as equal, even if the
+	//generated clocks are deduped into one clock.
 	if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(nodep)) {
 	    return visit(assignp, consumerp, activep);
 	} else if(AstAlways* alwaysp = dynamic_cast<AstAlways*>(nodep)) {
@@ -910,8 +922,6 @@ private:
 	    //UINFO(0, "lhs not an varref!" << endl);
 	    return NULL;
 	}
-	//UINFO(0,"looking for dupes of " << lhsp << endl);
-	//UINFO(0," rhs: " << rhsp << endl);
 	AstNodeAssign* dup =  hashAndFindDupe(assignp,extra1p,extra2p);
 	return dup ? (AstNodeVarRef*) dup->lhsp() : NULL;
     }
