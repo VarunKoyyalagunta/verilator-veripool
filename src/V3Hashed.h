@@ -70,10 +70,11 @@ public:
 
     // METHODS
     void clear() { m_hashMmap.clear(); AstNode::user4ClearTree(); }
-    void hashAndInsert(AstNode* nodep);	// Hash the node, and insert into map
+    iterator hashAndInsert(AstNode* nodep);	// Hash the node, and insert into map. Return iterator to inserted
     bool sameNodes(AstNode* node1p, AstNode* node2p);	// After hashing, and tell if identical
     void erase(iterator it);		// Remove node from structures
     iterator findDuplicate(AstNode* nodep);	// Return duplicate in hash, if any
+    iterator findDuplicate(AstNode* nodep, bool (*userCompare)(AstNode*,AstNode*));	// Extra user checks for sameness
     AstNode* iteratorNodep(iterator it) { return it->second; }
     void dumpFile(const string& filename, bool tree);
     void dumpFilePrefixed(const string& nameComment, bool tree=false);

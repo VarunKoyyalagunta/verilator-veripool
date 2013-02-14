@@ -767,16 +767,6 @@ void GateVisitor::optimizeElimVar(AstVarScope* varscp, AstNode* substp, AstNode*
 }
 
 //----------------------------------------------------------------------
-class GateOutputsVertex : public GateEitherVertex {
-public:
-    GateOutputsVertex(V3Graph* graphp)
-	: GateEitherVertex(graphp, NULL) {
-    }
-    virtual ~GateOutputsVertex() {}
-    virtual string name() const { return "*OUTPUTS*"; }
-    virtual string dotColor() const { return "green"; }
-    virtual string dotName() const { return ""; }
-};
 class GateDedupeGraphVisitor {
     #define GATE_DEDUPE_GRAPH_ITERATE(me,next_type)	\
             V3GraphEdge* edgep = (me)->inBeginp();	\
@@ -789,7 +779,7 @@ private:
     AstUser5InUse	m_inuser5;
     V3Hashed		m_hashed;
     //AstNode*		m_dupRhs;
-    GateVarVertex*	m_dupVvertexp;
+    //GateVarVertex*	m_dupVvertexp;
 
     
     void visit(GateVarVertex *vvertexp) {
@@ -825,14 +815,20 @@ private:
 
 		    //replace all of this varvertex's consumers with dupLhs
 		    for(V3GraphEdge* outedgep = vvertexp->outBeginp();outedgep;) {
-			//for dumb GateOutputsVertex
-			if(GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top())) {
-			    AstNode* consumerp = consumeVertexp->nodep();
-			    //UINFO(0," replacing logic feeding " << consumeVertexp << " " << consumerp << endl);
-			    GateElimVisitor elimVisitor(consumerp,vvertexp->varScp(),dupLhs);
-			} 
+			GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top());
+			AstNode* consumerp = consumeVertexp->nodep();
+			GateElimVisitor elimVisitor(consumerp,vvertexp->varScp(),dupLhs);
 			outedgep = outedgep->relinkFromp(dupVvertexp);
 		    }
+
+		    //propogate attributes
+		    dupVarScopep->varp()->propagateAttrFrom(vvertexp->varScp()->varp());
+		    if(vvertexp->isClock()) {
+			dupVarScopep->varp()->usedClock(true);
+			dupVvertexp->setIsClock();
+		    }
+
+		    //Remove inputs links
 		    while (V3GraphEdge* inedgep = vvertexp->inBeginp()) {
 			inedgep->unlinkDelete(); inedgep=NULL;
 		    }
@@ -840,44 +836,33 @@ private:
 		    lvertexnodep->unlinkFrBack();
 		    vvertexp->varScp()->valuep(lvertexnodep);
 		    lvertexnodep = NULL;
-		    //vvertexp->user(true);
-		    //lvertexp->user(true);
+		    vvertexp->user(true);
+		    lvertexp->user(true);
 		}
 	    }
 	}
     }
 
+    static bool extraDupeCheck(AstNode* node1p, AstNode* node2p) {
+	return node1p->user3p() == node2p->user3p() 
+	    && node1p->user5p() == node2p->user5p()
+	    && typeid(*((AstNodeAssign*)node1p->user2p())) == typeid(*((AstNodeAssign*)node2p->user2p()))
+	    ;
+    }
+
     AstNodeAssign* hashAndFindDupe(AstNodeAssign* assignp, AstNode* extra1p, AstNode* extra2p) {
-	if(extra1p) {
-	    //UINFO(0, "activep: " << activep << endl);
-	    //UINFO(0, "\tsentree: " << activep->sensesp() << endl);
-	}
 	AstNode *rhsp = assignp->rhsp();
-	const type_info& assign_type = typeid(*assignp);
 	rhsp->user2p(assignp);
 	rhsp->user3p(extra1p);
 	rhsp->user5p(extra2p);
-	m_hashed.hashAndInsert(rhsp);
+	V3Hashed::iterator inserted = m_hashed.hashAndInsert(rhsp);
 	//UINFO(0, "\trhsp " << ((AstAdd*) rhsp)->lhsp() << " ADD " << ((AstAdd*) nodep)->nodep() << endl);
-	AstNode* dup = NULL;
-	V3Hashed::iterator dupit = m_hashed.findDuplicate(rhsp);
-	while(dupit != m_hashed.end()) {
-	    AstNode* possibleDup = m_hashed.iteratorNodep(dupit);
-	    //UINFO(0,"possible dupe " << possibleDup << endl);
-	    //if(possibleDup->user5p())  UINFO(0," user5p:" << (AstNode*)possibleDup->user5p() << endl);
-	    //we're at the just inserted node
-	    if(possibleDup == rhsp) {
-		if(dup) m_hashed.erase(dupit);
-		break;
-	    } else if(!dup 
-		    && ((AstNode*)possibleDup->user3p()) == extra1p 
-		    && ((AstNode*)possibleDup->user5p()) == extra2p 
-		    && typeid(*((AstNodeAssign*)possibleDup->user2p())) == assign_type ) {
-		dup = possibleDup;
-	    }
-	    dupit++;
+	V3Hashed::iterator dupit = m_hashed.findDuplicate(rhsp, extraDupeCheck);
+	if(dupit != m_hashed.end()) {
+	    m_hashed.erase(inserted);
+	    return (AstNodeAssign*) m_hashed.iteratorNodep(dupit)->user2p();
 	}
-	return dup ? (AstNodeAssign*) dup->user2p() : NULL;
+	return NULL;
     }
 
     //returns a varref that has the same input logic
@@ -889,19 +874,6 @@ private:
 
 	//UINFO(0, "visiting: " << lvertexp << " : " << nodep << endl);
 
-	if(activep && !activep->user2()) {		
-	    activep->user2(true);
-	    AstNodeSenItem* senses = activep->sensesp()->sensesp();
-	    for (AstNodeSenItem* senp = senses; senp; senp=senp->nextp()->castNodeSenItem()) {
-		//FIXME, could it also be a AstSenGate?
-		AstSenItem* senitemp = senp->castSenItem();
-		if(AstNodeVarRef* varrefp = senitemp->varrefp()) {
-		    if(GateVarVertex * vvertexp = (GateVarVertex*) varrefp->varScopep()->user1p()) {
-			visit(vvertexp);
-		    }
-		}
-	    }
-	}
 	//TODO: Testing activep in the duplicate matching doesn't work
 	//optimally for statements under generated clocks. Statements under
 	//different generated clocks will never compare as equal, even if the
@@ -961,29 +933,34 @@ private:
 	}
 	return NULL;
     }
-    void visit(GateOutputsVertex *overtexp) {
-	GATE_DEDUPE_GRAPH_ITERATE(overtexp,GateVarVertex*);
-	//UINFO(0, "visiting: " << overtexp << endl);
-    }
 public:
-    GateDedupeGraphVisitor(GateOutputsVertex* bottom) {
-	AstNode::user2ClearTree();
-	visit(bottom);
+    GateDedupeGraphVisitor() {}
+    void dedupe(GateVarVertex* vvertexp) {
+	visit(vvertexp);
     }
     #undef GATE_DEDUPE_GRAPH_ITERATE
 };
 void GateVisitor::dedupe() {
-    // want the graph to be fully connected so recursing over it is easier
-    // dumb stopgap way of doing that for now
-    GateOutputsVertex *bottom = new GateOutputsVertex(&m_graph);
+    AstNode::user2ClearTree();
+    GateDedupeGraphVisitor deduper;
+
+    //traverse starting from each of the clocks
     for (V3GraphVertex* itp = m_graph.verticesBeginp(); itp; itp=itp->verticesNextp()) {
 	if(GateVarVertex* vvertexp = dynamic_cast<GateVarVertex*>(itp)) {
-	    if(vvertexp->isTop() && vvertexp->varScp()->varp()->isOutOnly()) {
-		new V3GraphEdge(&m_graph, vvertexp, bottom, 1);
+	    if(vvertexp->isClock()) {
+		deduper.dedupe(vvertexp);
 	    }
 	}
     }
-    GateDedupeGraphVisitor ggdv = GateDedupeGraphVisitor(bottom);
+
+    //traverse starting from each of the outputs
+    for (V3GraphVertex* itp = m_graph.verticesBeginp(); itp; itp=itp->verticesNextp()) {
+	if(GateVarVertex* vvertexp = dynamic_cast<GateVarVertex*>(itp)) {
+	    if(vvertexp->isTop() && vvertexp->varScp()->varp()->isOutOnly()) {
+		deduper.dedupe(vvertexp);
+	    }
+	}
+    }
 }
 
 //######################################################################
