@@ -899,6 +899,8 @@ private:
     AstNodeVarRef* visit(GateLogicVertex *lvertexp, AstVarScope *consumerp) {
 	GATE_DEDUPE_GRAPH_ITERATE(lvertexp,GateVarVertex*);
 
+	if(!lvertexp->dedupable()) return NULL;
+
 	AstNode* nodep = lvertexp->nodep();
 	AstActive* activep = lvertexp->activep();
 
@@ -929,7 +931,7 @@ private:
     }
     AstNodeVarRef* visit(AstAlways* alwaysp, AstVarScope* consumerp, AstActive* activep) {
 	AstNode* bodysp = alwaysp->bodysp();
-	while(bodysp) {
+	while(bodysp) { //loop should only execute once, since logic vertex marked not dedupable if it has multiple stmts 
 	    //UINFO(0, "always stmt: " << bodysp << endl);
 	    if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(bodysp)) {
 		if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(assignp->lhsp())) {
@@ -944,11 +946,15 @@ private:
 	}
 	return NULL;
     }
-    //ugly support for latches
+    //ugly support for latches of the specific form - 
+    // always @(...)
+    //   if(...)
+    //      foo = ...;
     AstNodeVarRef* visit(AstNodeIf* ifp, AstVarScope* consumerp, AstActive* activep) {
 	if(ifp->elsesp()) return NULL;
 	AstNode* ifsp = ifp->ifsp();
-	while(ifsp) {
+	if(ifsp->nextp()) return NULL;
+	while(ifsp) { //loop should only execute once, because of return right above
 	    if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(ifsp)) {
 		if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(assignp->lhsp())) {
 		    if(lhsVarRefp->varScopep() == consumerp) {
