@@ -788,8 +788,11 @@ private:
 	    m_hashed.hash(nodep);
 	}
     }
+    bool sameHash(AstNode* node1p, AstNode* node2p) {
+	return node1p && node2p && !node1p->sameHash().isIllegal() && !node2p->sameHash().isIllegal() && m_hashed.sameNodes(node1p,node2p);
+    }
     bool same(AstNUser* node1p, AstNUser* node2p) {
-	return node1p == node2p || (!((AstNode*)node1p)->sameHash().isIllegal() && !((AstNode*)node2p)->sameHash().isIllegal() && m_hashed.sameNodes((AstNode*)node1p,(AstNode*)node2p));
+	return node1p == node2p || sameHash((AstNode*)node1p,(AstNode*)node2p);
     }
 public:
     bool check(AstNode* node1p,AstNode* node2p)  {
