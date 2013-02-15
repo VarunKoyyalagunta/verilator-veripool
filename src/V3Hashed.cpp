@@ -113,6 +113,13 @@ V3Hashed::iterator V3Hashed::hashAndInsert(AstNode* nodep) {
     return m_hashMmap.insert(make_pair(nodeHash(nodep), nodep));
 }
 
+void V3Hashed::hash(AstNode* nodep) {
+    UINFO(8,"   hashI "<<nodep<<endl);
+    if (!nodep->user4p()) {
+	HashedVisitor visitor (nodep);
+    }
+}
+
 bool V3Hashed::sameNodes(AstNode* node1p, AstNode* node2p) {
     if (!node1p->user4p()) node1p->v3fatalSrc("Called isIdentical on non-hashed nodes");
     if (!node2p->user4p()) node2p->v3fatalSrc("Called isIdentical on non-hashed nodes");
@@ -189,13 +196,13 @@ V3Hashed::iterator V3Hashed::findDuplicate(AstNode* nodep) {
     return end();
 }
 
-V3Hashed::iterator V3Hashed::findDuplicate(AstNode* nodep, bool (*userCompare)(AstNode*,AstNode*)) {
+V3Hashed::iterator V3Hashed::findDuplicate(AstNode* nodep, V3HashedUserCheck *check) {
     UINFO(8,"   findD "<<nodep<<endl);
     if (!nodep->user4p()) nodep->v3fatalSrc("Called findDuplicate on non-hashed node");
     pair <HashMmap::iterator,HashMmap::iterator> eqrange = mmap().equal_range(nodeHash(nodep));
     for (HashMmap::iterator eqit = eqrange.first; eqit != eqrange.second; ++eqit) {
 	AstNode* node2p = eqit->second;
-	if (nodep != node2p && userCompare(nodep,node2p) && sameNodes(nodep, node2p)) {
+	if (nodep != node2p && check->check(nodep,node2p) && sameNodes(nodep, node2p)) {
 	    return eqit;
 	}
     }

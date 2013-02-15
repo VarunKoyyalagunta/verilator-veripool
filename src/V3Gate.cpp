@@ -34,7 +34,6 @@
 #include <iomanip>
 #include <vector>
 #include <list>
-#include <typeinfo>
 
 #include "V3Global.h"
 #include "V3Gate.h"
@@ -63,15 +62,17 @@ public:
 class GateEitherVertex : public V3GraphVertex {
     AstScope*	m_scopep;
     bool	m_reducible;	// True if this node should be able to be eliminated
+    bool	m_dedupable;	// True if this node should be able to be deduped
     bool	m_consumed;		// Output goes to something meaningful
 public:
     GateEitherVertex(V3Graph* graphp, AstScope* scopep)
-	: V3GraphVertex(graphp), m_scopep(scopep), m_reducible(true), m_consumed(false) {}
+	: V3GraphVertex(graphp), m_scopep(scopep), m_reducible(true), m_dedupable(true), m_consumed(false) {}
     virtual ~GateEitherVertex() {}
     // Accessors
     virtual string dotStyle() const { return m_consumed?"":"dotted"; }
     AstScope* scopep() const { return m_scopep; }
     bool reducible() const { return m_reducible; }
+    bool dedupable() const { return m_dedupable; }
     void setConsumed(const char* consumedReason) {
 	m_consumed = true;
 	//UINFO(0,"\t\tSetConsumed "<<consumedReason<<" "<<this<<endl);
@@ -80,6 +81,14 @@ public:
     void clearReducible(const char* nonReducibleReason) {
 	m_reducible = false;
 	//UINFO(0,"     NR: "<<nonReducibleReason<<"  "<<name()<<endl);
+    }
+    void clearDedupable(const char* nonDedupableReason) {
+	m_dedupable = false;
+	//UINFO(0,"     ND: "<<nonDedupableReason<<"  "<<name()<<endl);
+    }
+    void clearReducibleAndDedupable(const char* nonReducibleReason) {
+	clearReducible(nonReducibleReason);
+	clearDedupable(nonReducibleReason);
     }
 };
 
@@ -269,9 +278,10 @@ private:
 	    UINFO(4,"   STMT "<<nodep<<endl);
 	    // m_activep is null under AstCFunc's, that's ok.
 	    m_logicVertexp = new GateLogicVertex(&m_graph, m_scopep, nodep, m_activep, m_inSlow);
-	    if (!m_activeReducible) nonReducibleReason="Block Unreducible";
 	    if (nonReducibleReason) {
-		m_logicVertexp->clearReducible(nonReducibleReason);
+		m_logicVertexp->clearReducibleAndDedupable(nonReducibleReason);
+	    } else if(!m_activeReducible) {
+		m_logicVertexp->clearReducible("Block Unreducible");  //sequential logic is dedupable
 	    }
 	    if (consumeReason) m_logicVertexp->setConsumed(consumeReason);
 	    if (nodep->castSenItem()) m_logicVertexp->setConsumed("senItem");
@@ -288,13 +298,13 @@ private:
 	    varscp->user1p(vertexp);
 	    if (varscp->varp()->isSigPublic()) {
 		// Public signals shouldn't be changed, pli code might be messing with them
-		vertexp->clearReducible("SigPublic");
+		vertexp->clearReducibleAndDedupable("SigPublic");
 		vertexp->setConsumed("SigPublic");
 	    }
 	    if (varscp->varp()->isIO() && varscp->scopep()->isTop()) {
 		// We may need to convert to/from sysc/reg sigs
 		vertexp->setIsTop();
-		vertexp->clearReducible("isTop");
+		vertexp->clearReducibleAndDedupable("isTop");
 		vertexp->setConsumed("isTop");
 	    }
 	    if (varscp->varp()->isUsedClock()) 	vertexp->setConsumed("clock");
@@ -318,14 +328,14 @@ private:
 	if (debug()>6) m_graph.dumpDotFilePrefixed("gate_pre");
 	m_graph.removeRedundantEdgesSum(&V3GraphEdge::followAlwaysTrue);
 	m_graph.dumpDotFilePrefixed("gate_simp");
-	// Remove redundant logic
-	dedupe();
 	// Find gate interconnect and optimize
 	m_graph.userClearVertices();	// vertex->user(): bool.  True indicates we've set it as consumed
 	// Get rid of buffers first,
 	optimizeSignals(false);
 	// Then propagate more complicated equations
 	optimizeSignals(true);
+	// Remove redundant logic
+	dedupe();
 	// Warn
 	warnSignals();
 	consumedMark();
@@ -472,7 +482,7 @@ void GateVisitor::optimizeSignals(bool allowMultiIn) {
     for (V3GraphVertex* itp = m_graph.verticesBeginp(); itp; itp=itp->verticesNextp()) {
 	if (GateVarVertex* vvertexp = dynamic_cast<GateVarVertex*>(itp)) {
 	    if (vvertexp->inEmpty()) {
-		vvertexp->clearReducible("inEmpty");	// Can't deal with no sources
+		vvertexp->clearReducibleAndDedupable("inEmpty");	// Can't deal with no sources
 		if (!vvertexp->isTop()		// Ok if top inputs are driverless
 		    && !vvertexp->varScp()->varp()->valuep()
 		    && !vvertexp->varScp()->varp()->isSigPublic()) {
@@ -488,7 +498,7 @@ void GateVisitor::optimizeSignals(bool allowMultiIn) {
 		}
 	    }
 	    else if (!vvertexp->inSize1()) {
-		vvertexp->clearReducible("size!1");	// Can't deal with more than one src
+		vvertexp->clearReducibleAndDedupable("size!1");	// Can't deal with more than one src
 	    }
 	    // Reduce it?
 	    if (!vvertexp->reducible()) {
@@ -767,6 +777,44 @@ void GateVisitor::optimizeElimVar(AstVarScope* varscp, AstNode* substp, AstNode*
 }
 
 //----------------------------------------------------------------------
+//FIXME this can't be just a pointer comparison, needs to be another hash check
+class GateDedupeHash : public V3HashedUserCheck {
+private:
+    V3Hashed		m_hashed;
+
+    void hash(AstNode* nodep) {
+	if(nodep && !nodep->sameHash().isIllegal() && m_hashed.nodeHash(nodep).isIllegal()) {
+	    //UINFO(0, "hashing " << nodep << endl);
+	    m_hashed.hash(nodep);
+	}
+    }
+    bool same(AstNUser* node1p, AstNUser* node2p) {
+	return node1p == node2p || (!((AstNode*)node1p)->sameHash().isIllegal() && !((AstNode*)node2p)->sameHash().isIllegal() && m_hashed.sameNodes((AstNode*)node1p,(AstNode*)node2p));
+    }
+public:
+    bool check(AstNode* node1p,AstNode* node2p)  {
+	return same(node1p->user3p(),node2p->user3p()) && same(node1p->user5p(),node2p->user5p()) 
+	    && ((AstNodeAssign*)(node1p->user2p()))->type() == ((AstNodeAssign*)(node2p->user2p()))->type()
+	    ;
+    }
+    AstNodeAssign* hashAndFindDupe(AstNodeAssign* assignp, AstNode* extra1p, AstNode* extra2p) {
+	AstNode *rhsp = assignp->rhsp();
+	rhsp->user2p(assignp);
+	rhsp->user3p(extra1p);
+	rhsp->user5p(extra2p);
+
+	hash(extra1p);
+	hash(extra2p);
+
+	V3Hashed::iterator inserted = m_hashed.hashAndInsert(rhsp);
+	V3Hashed::iterator dupit = m_hashed.findDuplicate(rhsp, this);
+	if(dupit != m_hashed.end()) {
+	    m_hashed.erase(inserted);
+	    return (AstNodeAssign*) m_hashed.iteratorNodep(dupit)->user2p();
+	}
+	return NULL;
+    }
+};
 class GateDedupeGraphVisitor {
     #define GATE_DEDUPE_GRAPH_ITERATE(me,next_type)	\
             V3GraphEdge* edgep = (me)->inBeginp();	\
@@ -777,7 +825,7 @@ class GateDedupeGraphVisitor {
 private:
     AstUser3InUse	m_inuser3;
     AstUser5InUse	m_inuser5;
-    V3Hashed		m_hashed;
+    GateDedupeHash	m_hash;
     //AstNode*		m_dupRhs;
     //GateVarVertex*	m_dupVvertexp;
 
@@ -801,8 +849,7 @@ private:
 	    GateLogicVertex* lvertexp = (GateLogicVertex*)edgep->fromp();
 	    AstNodeVarRef* dupLhs = visit(lvertexp, vvertexp->varScp());
 	    //UINFO(0, "visiting: " << vvertexp << endl);
-	    //FIXME expand conditions to include public signals, etc
-	    if(vvertexp->isTop())  return;       //don't want to remove an output. 
+	    if(!vvertexp->dedupable())  return;
 	    if(dupLhs) {  //was there a lhs varref that has the same input logic as this varvertex?
 		//UINFO(0,"gateokvisitor " << lvertexp->nodep() << endl);
 		GateOkVisitor okVisitor(lvertexp->nodep(), false, true);
@@ -843,26 +890,9 @@ private:
 	}
     }
 
-    static bool extraDupeCheck(AstNode* node1p, AstNode* node2p) {
-	return node1p->user3p() == node2p->user3p() 
-	    && node1p->user5p() == node2p->user5p()
-	    && typeid(*((AstNodeAssign*)node1p->user2p())) == typeid(*((AstNodeAssign*)node2p->user2p()))
-	    ;
-    }
 
     AstNodeAssign* hashAndFindDupe(AstNodeAssign* assignp, AstNode* extra1p, AstNode* extra2p) {
-	AstNode *rhsp = assignp->rhsp();
-	rhsp->user2p(assignp);
-	rhsp->user3p(extra1p);
-	rhsp->user5p(extra2p);
-	V3Hashed::iterator inserted = m_hashed.hashAndInsert(rhsp);
-	//UINFO(0, "\trhsp " << ((AstAdd*) rhsp)->lhsp() << " ADD " << ((AstAdd*) nodep)->nodep() << endl);
-	V3Hashed::iterator dupit = m_hashed.findDuplicate(rhsp, extraDupeCheck);
-	if(dupit != m_hashed.end()) {
-	    m_hashed.erase(inserted);
-	    return (AstNodeAssign*) m_hashed.iteratorNodep(dupit)->user2p();
-	}
-	return NULL;
+	return m_hash.hashAndFindDupe(assignp,extra1p,extra2p);
     }
 
     //returns a varref that has the same input logic
@@ -922,10 +952,7 @@ private:
 	    if(AstNodeAssign* assignp = dynamic_cast<AstNodeAssign*>(ifsp)) {
 		if(AstNodeVarRef* lhsVarRefp = dynamic_cast<AstNodeVarRef*>(assignp->lhsp())) {
 		    if(lhsVarRefp->varScopep() == consumerp) {
-			if(AstNodeVarRef* ifcondp = dynamic_cast<AstNodeVarRef*>(ifp->condp())) {
-			    //UINFO(0, "IF condition: " << ifcondp << endl);
-			    return visit(assignp, consumerp, activep, ifcondp->varScopep());
-			}
+			return visit(assignp, consumerp, activep, ifp->condp());
 		    }
 		}
 	    }
