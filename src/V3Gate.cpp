@@ -271,6 +271,7 @@ private:
     bool		m_inSlow;	// Inside a slow structure
     V3Double0		m_statSigs;	// Statistic tracking
     V3Double0		m_statRefs;	// Statistic tracking
+    V3Double0		m_statDedupLogic;	// Statistic tracking	
 
     // METHODS
     void iterateNewStmt(AstNode* nodep, const char* nonReducibleReason, const char* consumeReason) {
@@ -473,6 +474,7 @@ public:
     virtual ~GateVisitor() {
 	V3Stats::addStat("Optimizations, Gate sigs deleted", m_statSigs);
 	V3Stats::addStat("Optimizations, Gate inputs replaced", m_statRefs);
+	V3Stats::addStat("Optimizations, Gate sigs deduped", m_statDedupLogic);
     }
 };
 
@@ -824,6 +826,7 @@ private:
     AstUser3InUse	m_inuser3;
     AstUser5InUse	m_inuser5;
     GateDedupeHash	m_hash;
+    V3Double0		m_numDeduped;
     
     void dedupeRecurse(GateVarVertex *vvertexp) {
 	//Check that we haven't been here before
@@ -850,7 +853,7 @@ private:
 		AstVarScope* dupVarScopep = dupVarRefp->varScopep();
 		GateVarVertex* dupVvertexp = (GateVarVertex*) (dupVarScopep->user1p());
 		UINFO(4,"replacing " << vvertexp << " with " << dupVvertexp << endl);
-
+		m_numDeduped++;
 		//replace all of this varvertex's consumers with dupVarRefp
 		for(V3GraphEdge* outedgep = vvertexp->outBeginp();outedgep;) {
 		    GateLogicVertex* consumeVertexp = dynamic_cast<GateLogicVertex*>(outedgep->top());
@@ -949,6 +952,9 @@ public:
     void dedupeTree(GateVarVertex* vvertexp) {
 	dedupeRecurse(vvertexp);
     }
+    V3Double0 numDeduped() {
+	return m_numDeduped;
+    }
 };
 //----------------------------------------------------------------------
 void GateVisitor::dedupe() {
@@ -972,6 +978,7 @@ void GateVisitor::dedupe() {
 	    }
 	}
     }
+    m_statDedupLogic += deduper.numDeduped();
 }
 
 //######################################################################
