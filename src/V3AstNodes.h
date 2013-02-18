@@ -142,6 +142,11 @@ public:
 	m_littleEndian = false;
 	setOp2p(new AstConst(fl,msb)); setOp3p(new AstConst(fl,lsb));
     }
+    AstRange(FileLine* fl, VNumRange range)
+	:AstNode(fl) {
+	m_littleEndian = range.littleEndian();
+	setOp2p(new AstConst(fl,range.hi())); setOp3p(new AstConst(fl,range.lo()));
+    }
     ASTNODE_NODE_FUNCS(Range, RANGE)
     AstNode* msbp() const { return op2p()->castNode(); }	// op2 = Msb expression
     AstNode* lsbp() const { return op3p()->castNode(); }	// op3 = Lsb expression
@@ -2552,6 +2557,33 @@ struct AstFinal : public AstNode {
     AstNode*	bodysp() 	const { return op1p()->castNode(); }	// op1 = Expressions to evaluate
 };
 
+struct AstInside : public AstNodeMath {
+    AstInside(FileLine* fl, AstNode* exprp, AstNode* itemsp)
+	: AstNodeMath(fl) {
+	addOp1p(exprp); addOp2p(itemsp);
+	dtypeSetLogicBool();
+    }
+    ASTNODE_NODE_FUNCS(Inside, INSIDE)
+    AstNode* exprp() const { return op1p()->castNode(); }	// op1 = LHS expression to compare with
+    AstNode* itemsp() const { return op2p()->castNode(); }	// op2 = RHS, possibly a list of expr or AstInsideRange
+    virtual string emitVerilog() { return "%l inside { %r }"; }
+    virtual string emitC() { V3ERROR_NA; return ""; }
+    virtual bool cleanOut() { return false; }  // NA
+};
+
+struct AstInsideRange : public AstNodeMath {
+    AstInsideRange(FileLine* fl, AstNode* lhsp, AstNode* rhsp)
+	: AstNodeMath(fl) {
+	addOp1p(lhsp); addOp2p(rhsp);
+    }
+    ASTNODE_NODE_FUNCS(InsideRange, INSIDERANGE)
+    AstNode* lhsp() const { return op1p()->castNode(); }	// op1 = LHS
+    AstNode* rhsp() const { return op2p()->castNode(); }	// op2 = RHS
+    virtual string emitVerilog() { return "[%l:%r]"; }
+    virtual string emitC() { V3ERROR_NA; return ""; }
+    virtual bool cleanOut() { return false; }  // NA
+};
+
 struct AstInitArray : public AstNode {
     // Set a var to a large list of values
     // The values must be in sorted order, and not exceed the size of the var's array.
@@ -3967,7 +3999,7 @@ struct AstPattern : public AstNodeMath {
     // Parents: AstNodeAssign, AstPattern, ...
     // Children: expression, AstPattern, AstPatReplicate
     AstPattern(FileLine* fl, AstNode* itemsp) : AstNodeMath(fl) {
-	addNOp1p(itemsp);
+	addNOp2p(itemsp);
     }
     ASTNODE_NODE_FUNCS(Pattern, PATTERN)
     virtual string emitVerilog() { V3ERROR_NA; return ""; }  // Implemented specially
@@ -3976,7 +4008,11 @@ struct AstPattern : public AstNodeMath {
     virtual string emitSimpleOperator() { V3ERROR_NA; return "";}
     virtual bool cleanOut() {V3ERROR_NA; return "";}
     virtual int instrCount()	const { return widthInstrs(); }
-    AstNode* itemsp() const { return op1p(); } // op1 = AstPatReplicate, AstPatMember, etc
+    AstNodeDType* getChildDTypep() const { return childDTypep(); }
+    AstNodeDType* childDTypep() const { return op1p()->castNodeDType(); } // op1 = Type assigning to
+    void childDTypep(AstNodeDType* nodep) { setOp1p(nodep); }
+    AstNodeDType* subDTypep() const { return dtypep() ? dtypep() : childDTypep(); }
+    AstNode* itemsp() const { return op2p(); } // op2 = AstPatReplicate, AstPatMember, etc
 };
 struct AstPatMember : public AstNodeMath {
     // Verilog '{a} or '{a{b}}

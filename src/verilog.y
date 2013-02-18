@@ -63,7 +63,6 @@ public:
     AstPin*	m_instParamp;	// Parameters for instantiations
     AstNodeModule* m_modp;	// Module
     int		m_modTypeImpNum; // Implicit type number, incremented each module
-    int		m_uniqueAttr;	// Bitmask of unique/priority keywords
 
     // CONSTRUCTORS
     V3ParseGrammar() {
@@ -332,6 +331,7 @@ class AstSenTree;
 %token<fl>		yINITIAL	"initial"
 %token<fl>		yINOUT		"inout"
 %token<fl>		yINPUT		"input"
+%token<fl>		yINSIDE		"inside"
 %token<fl>		yINT		"int"
 %token<fl>		yINTEGER	"integer"
 %token<fl>		yLOCALPARAM	"localparam"
@@ -557,7 +557,7 @@ class AstSenTree;
 // PSL op precedence
 %right	 	yP_MINUSGT  yP_LOGIFF
 %right		yP_ORMINUSGT  yP_OREQGT
-%left<fl>		prPSLCLK
+%left<fl>	prPSLCLK
 
 // Verilog op precedence
 %right		'?' ':'
@@ -567,7 +567,7 @@ class AstSenTree;
 %left		'^' yP_XNOR
 %left		'&' yP_NAND
 %left		yP_EQUAL yP_NOTEQUAL yP_CASEEQUAL yP_CASENOTEQUAL yP_WILDEQUAL yP_WILDNOTEQUAL
-%left		'>' '<' yP_GTE yP_LTE yP_LTE__IGNORE
+%left		'>' '<' yP_GTE yP_LTE yP_LTE__IGNORE yINSIDE
 %left		yP_SLEFT yP_SRIGHT yP_SSRIGHT
 %left		'+' '-'
 %left		'*' '/' '%'
@@ -651,7 +651,7 @@ description:			// ==IEEE: description
 	|	program_declaration			{ }
 	|	package_declaration			{ }
 	|	package_item				{ if ($1) GRAMMARP->unitPackage($1->fileline())->addStmtp($1); }
-	//UNSUP	bind_directive				{ }
+       	|	bind_directive				{ if ($1) GRAMMARP->unitPackage($1->fileline())->addStmtp($1); }
 	//	unsupported	// IEEE: config_declaration
 	//			// Verilator only
 	|	vltItem					{ }
@@ -1042,11 +1042,28 @@ net_declaration<nodep>:		// IEEE: net_declaration - excluding implict
 	;
 
 net_declarationFront:		// IEEE: beginning of net_declaration
-		net_declRESET net_type   strengthSpecE signingE delayrange { VARDTYPE($5); $5->basicp()->setSignedState($4); }
+		net_declRESET net_type   strengthSpecE net_scalaredE net_dataType { VARDTYPE($5); }
 	;
 
 net_declRESET:
 		/* empty */ 				{ VARRESET_NONLIST(UNKNOWN); }
+	;
+
+net_scalaredE:
+		/* empty */ 				{ }
+	//UNSUP: ySCALARED/yVECTORED ignored
+	|	ySCALARED			 	{ }
+	|	yVECTORED				{ }
+	;
+
+net_dataType<dtypep>:
+	//			// If there's a SV data type there shouldn't be a delay on this wire
+	//			// Otherwise #(...) can't be determined to be a delay or parameters
+	//			// Submit this as a footnote to the committee
+		var_data_type	 			{ $$ = $1; }
+	|	signingE rangeList delayE 		{ $$ = GRAMMARP->addRange(new AstBasicDType($2->fileline(), LOGIC, $1),$2,true); }  // not implicit
+	|	signing					{ $$ = new AstBasicDType($<fl>1, LOGIC, $1); }  // not implicit
+	|	/*implicit*/ delayE 			{ $$ = new AstBasicDType(CRELINE(), LOGIC); }  // not implicit
 	;
 
 net_type:			// ==IEEE: net_type
@@ -1217,9 +1234,15 @@ data_typeNoRef<dtypep>:		// ==IEEE: data_type, excluding class_type etc referenc
 	//			// IEEE: ps_covergroup: see data_type above
 	;
 
-data_type_or_void<dtypep>:		// ==IEEE: data_type_or_void
-		data_type				{ $$=$1; }
+data_type_or_void<dtypep>:	// ==IEEE: data_type_or_void
+		data_type				{ $$ = $1; }
 	//UNSUP	yVOID					{ UNSUP }	// No yTAGGED structures
+	;
+
+var_data_type<dtypep>:		// ==IEEE: var_data_type
+		data_type				{ $$ = $1; }
+	|	yVAR data_type				{ $$ = $2; }
+	|	yVAR implicit_typeE			{ $$ = $2; }
 	;
 
 struct_unionDecl<classp>:	// IEEE: part of data_type
@@ -1800,11 +1823,6 @@ rangeList<rangep>:		// IEEE: {packed_dimension}
         |	rangeList anyrange			{ $$ = $1; $1->addNext($2); }
 	;
 
-wirerangeE<dtypep>:
-		/* empty */    		               	{ $$ = new AstBasicDType(CRELINE(), LOGIC); }  // not implicit
-	|	rangeList 				{ $$ = GRAMMARP->addRange(new AstBasicDType($1->fileline(), LOGIC),$1,true); }  // not implicit
-	;
-
 // IEEE: select
 // Merged into more general idArray
 
@@ -1825,13 +1843,6 @@ packed_dimensionList<rangep>:	// IEEE: { packed_dimension }
 packed_dimension<rangep>:	// ==IEEE: packed_dimension
 		anyrange				{ $$ = $1; }
 	//UNSUP	'[' ']'					{ UNSUP }
-	;
-
-delayrange<dtypep>:
-		wirerangeE delayE 			{ $$ = $1; }
-	|	ySCALARED wirerangeE delayE 		{ $$ = $2; }
-	|	yVECTORED wirerangeE delayE 		{ $$ = $2; }
-	//UNSUP: ySCALARED/yVECTORED ignored
 	;
 
 //************************************************
@@ -2234,6 +2245,20 @@ case_itemList<caseitemp>:	// IEEE: { case_item + ... }
 	|	case_itemList yDEFAULT ':' stmtBlock		{ $$ = $1;$1->addNext(new AstCaseItem($3,NULL,$4)); }
 	;
 
+open_range_list<nodep>:		// ==IEEE: open_range_list + open_value_range
+		open_value_range			{ $$ = $1; }
+	|	open_range_list ',' open_value_range	{ $$ = $1;$1->addNext($3); }
+	;
+
+open_value_range<nodep>:	// ==IEEE: open_value_range
+		value_range				{ $$ = $1; }
+	;
+
+value_range<nodep>:		// ==IEEE: value_range
+		expr					{ $$ = $1; }
+	|	'[' expr ':' expr ']'			{ $$ = new AstInsideRange($3,$2,$4); }
+	;
+
 caseCondList<nodep>:		// IEEE: part of case_item
 		expr 					{ $$ = $1; }
 	|	caseCondList ',' expr			{ $$ = $1;$1->addNext($3); }
@@ -2288,7 +2313,7 @@ patternKey<nodep>:		// IEEE: merge structure_pattern_key, array_pattern_key, ass
 	|	yaID__ETC				{ $$ = new AstText($<fl>1,*$1); }
 	;
 
-assignment_pattern<nodep>:	// ==IEEE: assignment_pattern
+assignment_pattern<patternp>:	// ==IEEE: assignment_pattern
 	// This doesn't match the text of the spec.  I think a : is missing, or example code needed
 	// yP_TICKBRA constExpr exprList '}'	{ $$="'{"+$2+" "+$3"}"; }
 	//			// "'{ const_expression }" is same as patternList with one entry
@@ -2746,7 +2771,7 @@ expr<nodep>:			// IEEE: part of expression/constant_expression/primary
 	|	~l~expr '?' ~r~expr ':' ~r~expr		{ $$ = new AstCond($2,$1,$3,$5); }
 	//
 	//			// IEEE: inside_expression
-	//UNSUP	~l~expr yINSIDE '{' open_range_list '}'	{ UNSUP }
+	|	~l~expr yINSIDE '{' open_range_list '}'	{ $$ = new AstInside($2,$1,$4); }
 	//
 	//			// IEEE: tagged_union_expression
 	//UNSUP	yTAGGED id/*member*/ %prec prTAGGED		{ UNSUP }
@@ -2850,7 +2875,7 @@ exprOkLvalue<nodep>:		// expression that's also OK to use as a variable_lvalue
 	//			// IEEE: [ assignment_pattern_expression_type ] == [ ps_type_id /ps_paremeter_id/data_type]
 	//			// We allow more here than the spec requires
 	//UNSUP	~l~exprScope assignment_pattern		{ UNSUP }
-	//UNSUP	data_type assignment_pattern		{ UNSUP }
+	|	data_type assignment_pattern		{ $$ = $2; $2->childDTypep($1); }
 	|	assignment_pattern			{ $$ = $1; }
 	//
 	//UNSUP	streaming_concatenation			{ UNSUP }
