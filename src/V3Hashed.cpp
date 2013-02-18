@@ -106,10 +106,7 @@ public:
 // Hashed class functions
 
 V3Hashed::iterator V3Hashed::hashAndInsert(AstNode* nodep) {
-    UINFO(8,"   hashI "<<nodep<<endl);
-    if (!nodep->user4p()) {
-	HashedVisitor visitor (nodep);
-    }
+    hash(nodep);
     return m_hashMmap.insert(make_pair(nodeHash(nodep), nodep));
 }
 
