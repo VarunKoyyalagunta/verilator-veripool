@@ -366,7 +366,7 @@ private:
 	// Then propagate more complicated equations
 	optimizeSignals(true);
 	// Remove redundant logic
-	dedupe();
+	if(v3Global.opt.oDedupe()) dedupe();
 	// Warn
 	warnSignals();
 	consumedMark();
