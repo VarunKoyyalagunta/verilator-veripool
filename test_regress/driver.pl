@@ -365,6 +365,7 @@ sub new {
 	'v3' => 0,
 	verilator_flags => ["-cc",
 			    "-Mdir $self->{obj_dir}",
+			    "-OD",
 			    "--debug-check"],
 	verilator_flags2 => [],
 	verilator_make_gcc => 1,
