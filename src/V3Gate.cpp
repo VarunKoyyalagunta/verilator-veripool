@@ -818,8 +818,8 @@ private:
     V3Hashed		m_hashed;	// Hash, contains rhs of assigns
 
     void hash(AstNode* nodep) {
-	// !NULL && the object is hashable         && the object hasn't been hashed already
-	if(nodep && !nodep->sameHash().isIllegal() && m_hashed.nodeHash(nodep).isIllegal()) {
+	// !NULL && the object is hashable
+	if(nodep && !nodep->sameHash().isIllegal()) {
 	    m_hashed.hash(nodep);
 	}
     }
