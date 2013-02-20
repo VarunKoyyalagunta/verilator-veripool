@@ -965,10 +965,7 @@ private:
 		while (V3GraphEdge* inedgep = vvertexp->inBeginp()) {
 		    inedgep->unlinkDelete(); inedgep=NULL;
 		}
-		// FIXME: I think replaceAssigns() does the deleteTree on lvertexNodep.
-		// I'm not really sure about the node unlinking and deleting. This is 
-		// copied from what optimizeSignals() does, and I'm guessing the 
-		// procedure should be the same?
+		// replaceAssigns() does the deleteTree on lvertexNodep in a later step
 		AstNode* lvertexNodep = lvertexp->nodep();
 		lvertexNodep->unlinkFrBack(); 
 		vvertexp->varScp()->valuep(lvertexNodep);
