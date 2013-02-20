@@ -805,7 +805,8 @@ void GateVisitor::optimizeElimVar(AstVarScope* varscp, AstNode* substp, AstNode*
 }
 
 //######################################################################
-// Auxiliary hash class for GateDedupeGraphVisitor
+// Auxiliary hash class for GateDedupeVarVisitor
+
 class GateDedupeHash : public V3HashedUserCheck {
 private:
     // NODE STATE
@@ -857,15 +858,80 @@ public:
 	return NULL;
     }
 };
+
 //######################################################################
-// Recurse through the tree, looking for duplicate expressions on the rhs of an assign
+// Have we seen the rhs of this assign before?
+
+class GateDedupeVarVisitor : public GateBaseVisitor {
+private:
+    // RETURN STATE
+    AstNodeVarRef*	m_dupLhsVarRefp;	// Duplicate lhs varref that was found
+    // STATE
+    GateDedupeHash	m_hash;			// Hash used to find dupes
+    AstVarScope*	m_consumerVarScopep;	// VarScope on lhs of assignment (what we're replacing)
+    AstActive*		m_activep;		// AstActive that assign is under
+    AstNode*		m_ifCondp;		// IF condition that assign is under
+    bool		m_always;		// Assign is under an always
+    
+    // VISITORS
+    virtual void visit(AstNodeAssign* assignp, AstNUser*) {
+	AstNode* lhsp = assignp->lhsp();
+	// Possible todo, handle more complex lhs expressions
+	if(AstNodeVarRef* lhsVarRefp = lhsp->castNodeVarRef()) {
+	    if(lhsVarRefp->varScopep() != m_consumerVarScopep) m_consumerVarScopep->v3fatalSrc("Consumer doesn't match lhs of assign");
+	    if(AstNodeAssign* dup =  m_hash.hashAndFindDupe(assignp,m_activep,m_ifCondp)) {
+		m_dupLhsVarRefp = (AstNodeVarRef*) dup->lhsp();
+	    }
+	}
+    }
+    virtual void visit(AstAlways* alwaysp, AstNUser*) {
+	// I think we could safely dedupe an always block with multiple non-blocking statements, but erring on side of caution here
+	m_always = true;
+	if(alwaysp->isJustOneBodyStmt()) 
+	    alwaysp->bodysp()->accept(*this); 
+    }
+    // Ugly support for latches of the specific form - 
+    //  always @(...)
+    //    if(...)
+    //       foo = ...; // or foo <= ...;
+    virtual void visit(AstNodeIf* ifp, AstNUser*) {
+	if(m_always && !ifp->elsesp()) {  //we're under an always and there's no else
+	    AstNode* ifsp = ifp->ifsp();
+	    if(!ifsp->nextp()) {  //only one stmt under if
+		m_ifCondp = ifp->condp();
+		ifsp->accept(*this);
+	    }
+	}
+    }
+    //--------------------
+    // Default
+    virtual void visit(AstNode* nodep, AstNUser*) {}
+
+public:
+    // CONSTUCTORS
+    GateDedupeVarVisitor() {}
+    // PUBLIC METHODS
+    AstNodeVarRef* findDupe(AstNode* nodep, AstVarScope* consumerVarScopep, AstActive* activep) {
+	m_consumerVarScopep = consumerVarScopep;
+	m_activep = activep;
+	m_always = false;
+	m_ifCondp = NULL;
+	m_dupLhsVarRefp = NULL;
+	nodep->accept(*this);
+	return m_dupLhsVarRefp;
+    }
+};
+
+//######################################################################
+// Recurse through the graph, looking for duplicate expressions on the rhs of an assign
+
 class GateDedupeGraphVisitor : public GateGraphBaseVisitor {
 private:
     // NODE STATE
     // AstVarScope::user2p	-> bool: already visited 
-    // AstUser2InUse	m_inuser2;	(Allocated for use in GateVisitor)
-    GateDedupeHash	m_hash;		// Hash used to find dupes
-    V3Double0		m_numDeduped;	// Statistic tracking
+    // AstUser2InUse		m_inuser2;	(Allocated for use in GateVisitor)
+    V3Double0			m_numDeduped;	// Statistic tracking
+    GateDedupeVarVisitor	m_varVisitor;	// Looks for a dupe of the logic
     
     virtual AstNUser* visit(GateVarVertex *vvertexp, AstNUser*) {
 	// Check that we haven't been here before
@@ -928,55 +994,11 @@ private:
 	    //different generated clocks will never compare as equal, even if the
 	    //generated clocks are deduped into one clock.
 	    AstActive* activep = lvertexp->activep();
-
-	    if(AstNodeAssign* assignp = nodep->castNodeAssign()) {
-		return (AstNUser*) findDupe(assignp, consumerVarScopep, activep);
-	    } else if(AstAlways* alwaysp = nodep->castAlways()) {
-		return (AstNUser*) findDupe(alwaysp, consumerVarScopep, activep);
-	    }
+	    return (AstNUser*) m_varVisitor.findDupe(nodep, consumerVarScopep, activep);
 	}
 	return NULL;
     }
 
-    AstNodeVarRef* findDupe(AstNodeAssign* assignp, AstVarScope* consumerp, AstNode* extra1p=NULL, AstNode* extra2p=NULL) {
-	AstNode* lhsp = assignp->lhsp();
-	// Possible todo, handle more complex lhs expressions
-	if(AstNodeVarRef* lhsVarRefp = lhsp->castNodeVarRef()) {
-	    if(lhsVarRefp->varScopep() != consumerp) consumerp->v3fatalSrc("Consumer doesn't match lhs of assign");
-	    if(AstNodeAssign* dup =  m_hash.hashAndFindDupe(assignp,extra1p,extra2p)) {
-		return (AstNodeVarRef*) dup->lhsp();
-	    }
-	}
-	return NULL;
-    }
-
-    AstNodeVarRef* findDupe(AstAlways* alwaysp, AstVarScope* consumerp, AstActive* activep) {
-	AstNode* bodysp = alwaysp->bodysp();
-	if(bodysp) {
-	    // I think we could safely dedupe an always block with multiple non-blocking statements, but erring on side of caution here
-	    if(bodysp->nextp()) alwaysp->v3fatalSrc("Always block has more than one statement. Should've been marked not dedupable in GateVisitor");
-	    if(AstNodeAssign* assignp = bodysp->castNodeAssign()) {
-		return findDupe(assignp, consumerp, activep);
-	    } else if(AstNodeIf* ifp = bodysp->castNodeIf()) {
-		return findDupe(ifp, consumerp, activep);
-	    }
-	}
-	return NULL;
-    }
-
-    // Ugly support for latches of the specific form - 
-    //  always @(...)
-    //    if(...)
-    //       foo = ...; // or foo <= ...;
-    AstNodeVarRef* findDupe(AstNodeIf* ifp, AstVarScope* consumerp, AstActive* activep) {
-	if(ifp->elsesp()) return NULL;  //no else
-	AstNode* ifsp = ifp->ifsp();
-	if(ifsp->nextp()) return NULL;  //only one stmt under if
-	if(AstNodeAssign* assignp = ifsp->castNodeAssign()) {
-	    return findDupe(assignp, consumerp, activep, ifp->condp());
-	}
-	return NULL;
-    }
 public:
     GateDedupeGraphVisitor() {}
     void dedupeTree(GateVarVertex* vvertexp) {
