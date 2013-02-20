@@ -44,6 +44,7 @@ public:
 };
 
 //============================================================================
+
 struct V3HashedUserCheck {
     // Functor for V3Hashed::findDuplicate
     virtual bool check(AstNode*,AstNode*) =0;
