@@ -193,13 +193,13 @@ V3Hashed::iterator V3Hashed::findDuplicate(AstNode* nodep) {
     return end();
 }
 
-V3Hashed::iterator V3Hashed::findDuplicate(AstNode* nodep, V3HashedUserCheck *check) {
+V3Hashed::iterator V3Hashed::findDuplicate(AstNode* nodep, V3HashedUserCheck* checkp) {
     UINFO(8,"   findD "<<nodep<<endl);
     if (!nodep->user4p()) nodep->v3fatalSrc("Called findDuplicate on non-hashed node");
     pair <HashMmap::iterator,HashMmap::iterator> eqrange = mmap().equal_range(nodeHash(nodep));
     for (HashMmap::iterator eqit = eqrange.first; eqit != eqrange.second; ++eqit) {
 	AstNode* node2p = eqit->second;
-	if (nodep != node2p && check->check(nodep,node2p) && sameNodes(nodep, node2p)) {
+	if (nodep != node2p && checkp->check(nodep,node2p) && sameNodes(nodep, node2p)) {
 	    return eqit;
 	}
     }
