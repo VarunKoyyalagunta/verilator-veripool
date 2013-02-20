@@ -863,6 +863,11 @@ public:
 // Have we seen the rhs of this assign before?
 
 class GateDedupeVarVisitor : public GateBaseVisitor {
+    // A node passed to findDupe() is visited in this order
+    //   (otherwise dupe not found)
+    // 1. AstNodeAssign
+    // 2. AstAlways -> AstNodeAssign
+    // 3. AstAlways -> AstNodeIf -> AstNodeAssign
 private:
     // RETURN STATE
     AstNodeVarRef*	m_dupLhsVarRefp;	// Duplicate lhs varref that was found
