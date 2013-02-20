@@ -886,9 +886,10 @@ private:
     }
     virtual void visit(AstAlways* alwaysp, AstNUser*) {
 	// I think we could safely dedupe an always block with multiple non-blocking statements, but erring on side of caution here
-	m_always = true;
-	if(alwaysp->isJustOneBodyStmt()) 
+	if(!m_always && alwaysp->isJustOneBodyStmt()) {
+	    m_always = true;
 	    alwaysp->bodysp()->accept(*this); 
+	}
     }
     // Ugly support for latches of the specific form - 
     //  always @(...)
